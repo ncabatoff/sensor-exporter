@@ -24,6 +24,20 @@ var (
 		Help:      "fan speed (rotations per minute).",
 	}, []string{"fantype", "chip", "adaptor"})
 
+	voltages = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "sensor",
+		Subsystem: "lm",
+		Name:      "voltage_volts",
+		Help:      "voltage in volts",
+	}, []string{"intype", "chip", "adaptor"})
+
+	powers = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "sensor",
+		Subsystem: "lm",
+		Name:      "power_watts",
+		Help:      "power in watts",
+	}, []string{"powertype", "chip", "adaptor"})
+
 	temperature = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: "sensor",
 		Subsystem: "lm",
@@ -41,6 +55,8 @@ var (
 
 func init() {
 	prometheus.MustRegister(fanspeed)
+	prometheus.MustRegister(voltages)
+	prometheus.MustRegister(powers)
 	prometheus.MustRegister(temperature)
 	prometheus.MustRegister(hddtemperature)
 }
@@ -82,6 +98,10 @@ func collectLm() {
 					fanspeed.WithLabelValues(feature.GetLabel(), chipName, adaptorName).Set(feature.GetValue())
 				} else if strings.HasPrefix(feature.Name, "temp") {
 					temperature.WithLabelValues(feature.GetLabel(), chipName, adaptorName).Set(feature.GetValue())
+				} else if strings.HasPrefix(feature.Name, "in") {
+					voltages.WithLabelValues(feature.GetLabel(), chipName, adaptorName).Set(feature.GetValue())
+				} else if strings.HasPrefix(feature.Name, "power") {
+					powers.WithLabelValues(feature.GetLabel(), chipName, adaptorName).Set(feature.GetValue())
 				}
 			}
 
