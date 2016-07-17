@@ -1,9 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"flag"
+	"io"
+	"log"
+	"net"
 	"net/http"
 	_ "net/http/pprof"
+	"strconv"
 	"strings"
 	"time"
 
@@ -25,21 +30,31 @@ var (
 		Name:      "temperature_celsius",
 		Help:      "temperature in celsius",
 	}, []string{"temptype", "chip", "adaptor"})
+
+	hddtemperature = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "sensor",
+		Subsystem: "hddsmart",
+		Name:      "temperature_celsius",
+		Help:      "temperature in celsius",
+	}, []string{"device", "id"})
 )
 
 func init() {
 	prometheus.MustRegister(fanspeed)
 	prometheus.MustRegister(temperature)
+	prometheus.MustRegister(hddtemperature)
 }
 
 func main() {
 	var (
-		listenAddress = flag.String("web.listen-address", ":9255", "Address on which to expose metrics and web interface.")
-		metricsPath   = flag.String("web.telemetry-path", "/metrics", "Path under which to expose metrics.")
+		listenAddress  = flag.String("web.listen-address", ":9255", "Address on which to expose metrics and web interface.")
+		metricsPath    = flag.String("web.telemetry-path", "/metrics", "Path under which to expose metrics.")
+		hddtempAddress = flag.String("hddtemp-address", "localhost:7634", "Address to fetch hdd metrics from.")
 	)
 	flag.Parse()
 
-	go collect()
+	go collectLm()
+	go collectHdd(*hddtempAddress)
 
 	http.Handle(*metricsPath, prometheus.Handler())
 
@@ -55,7 +70,7 @@ func main() {
 	http.ListenAndServe(*listenAddress, nil)
 }
 
-func collect() {
+func collectLm() {
 	gosensors.Init()
 	defer gosensors.Cleanup()
 	for {
@@ -72,5 +87,43 @@ func collect() {
 
 		}
 		time.Sleep(1 * time.Second)
+	}
+}
+
+func collectHdd(address string) {
+	for {
+		conn, err := net.Dial("tcp", address)
+		if err != nil {
+			log.Printf("Error connecting to hddtemp address '%s': %v", address, err)
+		} else {
+			var buf bytes.Buffer
+			_, err := io.Copy(&buf, conn)
+			if err != nil {
+				log.Printf("Error reading from hddtemp socket: %v", err)
+			} else {
+				parseHddTemps(buf.String())
+			}
+		}
+		time.Sleep(1 * time.Second)
+	}
+}
+
+func parseHddTemps(s string) {
+	if len(s) < 1 || s[0] != '|' {
+		log.Printf("Error parsing output from hddtemp: %s", s)
+	}
+	for _, item := range strings.Split(s[1:len(s)-1], "||") {
+		pieces := strings.Split(item, "|")
+		if len(pieces) != 4 {
+			log.Printf("Error parsing item from hddtemp, expected 4 tokens: %s", item)
+		} else {
+			dev, id, temp := pieces[0], pieces[1], pieces[2]
+			ftemp, err := strconv.ParseFloat(temp, 64)
+			if err != nil {
+				log.Printf("Error parsing temperature as float: %s", temp)
+			} else {
+				hddtemperature.WithLabelValues(dev, id).Set(ftemp)
+			}
+		}
 	}
 }
