@@ -123,6 +123,9 @@ func collectHdd(address string) {
 			} else {
 				parseHddTemps(buf.String())
 			}
+			if err := conn.Close(); err != nil {
+				log.Printf("Error closing hddtemp socket: %v", err)
+			}
 		}
 		time.Sleep(1 * time.Second)
 	}
