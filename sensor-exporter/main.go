@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"flag"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -45,12 +46,11 @@ var (
 		Help:      "temperature in celsius",
 	}, []string{"temptype", "chip", "adaptor"})
 
-	hddtemperature = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Namespace: "sensor",
-		Subsystem: "hddsmart",
-		Name:      "temperature_celsius",
-		Help:      "temperature in celsius",
-	}, []string{"device", "id"})
+	hddTempDesc = prometheus.NewDesc(
+		"sensor_hddsmart_temperature_celsius",
+		"temperature in celsius",
+		[]string{"device", "id"},
+		nil)
 )
 
 func init() {
@@ -58,7 +58,6 @@ func init() {
 	prometheus.MustRegister(voltages)
 	prometheus.MustRegister(powers)
 	prometheus.MustRegister(temperature)
-	prometheus.MustRegister(hddtemperature)
 }
 
 func main() {
@@ -69,8 +68,14 @@ func main() {
 	)
 	flag.Parse()
 
+	prometheus.EnableCollectChecks(true)
+	hddcollector := NewHddCollector(*hddtempAddress)
+	if err := hddcollector.Init(); err != nil {
+		log.Printf("error readding hddtemps: %v", err)
+	}
+	prometheus.MustRegister(hddcollector)
+
 	go collectLm()
-	go collectHdd(*hddtempAddress)
 
 	http.Handle(*metricsPath, prometheus.Handler())
 
@@ -110,46 +115,107 @@ func collectLm() {
 	}
 }
 
-func collectHdd(address string) {
-	for {
-		conn, err := net.Dial("tcp", address)
-		if err != nil {
-			log.Printf("Error connecting to hddtemp address '%s': %v", address, err)
-		} else {
-			var buf bytes.Buffer
-			_, err := io.Copy(&buf, conn)
-			if err != nil {
-				log.Printf("Error reading from hddtemp socket: %v", err)
-			} else {
-				parseHddTemps(buf.String())
-			}
-			if err := conn.Close(); err != nil {
-				log.Printf("Error closing hddtemp socket: %v", err)
-			}
-		}
-		time.Sleep(1 * time.Second)
+type (
+	HddCollector struct {
+		address string
+		conn    net.Conn
+		buf     bytes.Buffer
+	}
+
+	HddTemperature struct {
+		Device             string
+		Id                 string
+		TemperatureCelsius float64
+	}
+)
+
+func NewHddCollector(address string) *HddCollector {
+	return &HddCollector{
+		address: address,
 	}
 }
 
-func parseHddTemps(s string) {
+func (h *HddCollector) Init() error {
+	conn, err := net.Dial("tcp", h.address)
+	if err != nil {
+		return fmt.Errorf("error connecting to hddtemp address '%s': %v", h.address, err)
+	}
+	h.conn = conn
+	return nil
+}
+
+func (h *HddCollector) readTempsFromConn() (string, error) {
+	_, err := io.Copy(&h.buf, h.conn)
+	if err != nil {
+		return "", fmt.Errorf("Error reading from hddtemp socket: %v", err)
+	}
+	return h.buf.String(), nil
+}
+
+func (h *HddCollector) Close() error {
+	if err := h.conn.Close(); err != nil {
+		return fmt.Errorf("Error closing hddtemp socket: %v", err)
+	}
+	return nil
+}
+
+func parseHddTemps(s string) ([]HddTemperature, error) {
+	var hddtemps []HddTemperature
 	if len(s) < 1 || s[0] != '|' {
-		log.Printf("Error parsing output from hddtemp: %s", s)
+		return nil, fmt.Errorf("Error parsing output from hddtemp: %s", s)
 	}
 	for _, item := range strings.Split(s[1:len(s)-1], "||") {
-		pieces := strings.Split(item, "|")
-		if len(pieces) != 4 {
-			log.Printf("Error parsing item from hddtemp, expected 4 tokens: %s", item)
-		} else if pieces[3] != "C" {
-			log.Printf("Error parsing item from hddtemp, I only speak Celsius", item)
+		hddtemp, err := parseHddTemp(item)
+		if err != nil {
+			return nil, fmt.Errorf("Error parsing output from hddtemp: %v", err)
 		} else {
-			dev, id, temp := pieces[0], pieces[1], pieces[2]
-			ftemp, err := strconv.ParseFloat(temp, 64)
-			if err != nil {
-				log.Printf("Error parsing temperature as float: %s", temp)
-			} else {
-				hddtemperature.WithLabelValues(dev, id).Set(ftemp)
-				// TODO handle unit F
-			}
+			hddtemps = append(hddtemps, hddtemp)
 		}
+	}
+	return hddtemps, nil
+}
+
+func parseHddTemp(s string) (HddTemperature, error) {
+	pieces := strings.Split(s, "|")
+	if len(pieces) != 4 {
+		return HddTemperature{}, fmt.Errorf("error parsing item from hddtemp, expected 4 tokens: %s", s)
+	}
+	if pieces[3] != "C" {
+		return HddTemperature{}, fmt.Errorf("error parsing item from hddtemp, I only speak Celsius", s)
+	}
+
+	dev, id, temp := pieces[0], pieces[1], pieces[2]
+	ftemp, err := strconv.ParseFloat(temp, 64)
+	if err != nil {
+		return HddTemperature{}, fmt.Errorf("Error parsing temperature as float: %s", temp)
+	}
+
+	return HddTemperature{Device: dev, Id: id, TemperatureCelsius: ftemp}, nil
+}
+
+// Describe implements prometheus.Collector.
+func (e *HddCollector) Describe(ch chan<- *prometheus.Desc) {
+	ch <- hddTempDesc
+}
+
+// Collect implements prometheus.Collector.
+func (h *HddCollector) Collect(ch chan<- prometheus.Metric) {
+	tempsString, err := h.readTempsFromConn()
+	if err != nil {
+		log.Printf("error reading temps from hddtemp daemon: %v", err)
+		return
+	}
+	hddtemps, err := parseHddTemps(tempsString)
+	if err != nil {
+		log.Printf("error parsing temps from hddtemp daemon: %v", err)
+		return
+	}
+
+	for _, ht := range hddtemps {
+		ch <- prometheus.MustNewConstMetric(hddTempDesc,
+			prometheus.GaugeValue,
+			ht.TemperatureCelsius,
+			ht.Device,
+			ht.Id)
 	}
 }
