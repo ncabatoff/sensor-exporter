@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/md14454/gosensors"
+	"github.com/ncabatoff/gosensors"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -139,6 +139,8 @@ func parseHddTemps(s string) {
 		pieces := strings.Split(item, "|")
 		if len(pieces) != 4 {
 			log.Printf("Error parsing item from hddtemp, expected 4 tokens: %s", item)
+		} else if pieces[3] != "C" {
+			log.Printf("Error parsing item from hddtemp, I only speak Celsius", item)
 		} else {
 			dev, id, temp := pieces[0], pieces[1], pieces[2]
 			ftemp, err := strconv.ParseFloat(temp, 64)
@@ -146,6 +148,7 @@ func parseHddTemps(s string) {
 				log.Printf("Error parsing temperature as float: %s", temp)
 			} else {
 				hddtemperature.WithLabelValues(dev, id).Set(ftemp)
+				// TODO handle unit F
 			}
 		}
 	}
