@@ -11,40 +11,35 @@ import (
 	_ "net/http/pprof"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/ncabatoff/gosensors"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
 var (
-	fanspeed = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Namespace: "sensor",
-		Subsystem: "lm",
-		Name:      "fan_speed_rpm",
-		Help:      "fan speed (rotations per minute).",
-	}, []string{"fantype", "chip", "adaptor"})
+	fanspeedDesc = prometheus.NewDesc(
+		"sensor_lm_fan_speed_rpm",
+		"fan speed (rotations per minute).",
+		[]string{"fantype", "chip", "adaptor"},
+		nil)
 
-	voltages = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Namespace: "sensor",
-		Subsystem: "lm",
-		Name:      "voltage_volts",
-		Help:      "voltage in volts",
-	}, []string{"intype", "chip", "adaptor"})
+	voltageDesc = prometheus.NewDesc(
+		"sensor_lm_voltage_volts",
+		"voltage in volts",
+		[]string{"intype", "chip", "adaptor"},
+		nil)
 
-	powers = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Namespace: "sensor",
-		Subsystem: "lm",
-		Name:      "power_watts",
-		Help:      "power in watts",
-	}, []string{"powertype", "chip", "adaptor"})
+	powerDesc = prometheus.NewDesc(
+		"sensor_lm_power_watts",
+		"power in watts",
+		[]string{"powertype", "chip", "adaptor"},
+		nil)
 
-	temperature = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Namespace: "sensor",
-		Subsystem: "lm",
-		Name:      "temperature_celsius",
-		Help:      "temperature in celsius",
-	}, []string{"temptype", "chip", "adaptor"})
+	temperatureDesc = prometheus.NewDesc(
+		"sensor_lm_temperature_celsius",
+		"temperature in celsius",
+		[]string{"temptype", "chip", "adaptor"},
+		nil)
 
 	hddTempDesc = prometheus.NewDesc(
 		"sensor_hddsmart_temperature_celsius",
@@ -52,13 +47,6 @@ var (
 		[]string{"device", "id"},
 		nil)
 )
-
-func init() {
-	prometheus.MustRegister(fanspeed)
-	prometheus.MustRegister(voltages)
-	prometheus.MustRegister(powers)
-	prometheus.MustRegister(temperature)
-}
 
 func main() {
 	var (
@@ -69,13 +57,16 @@ func main() {
 	flag.Parse()
 
 	prometheus.EnableCollectChecks(true)
+
 	hddcollector := NewHddCollector(*hddtempAddress)
 	if err := hddcollector.Init(); err != nil {
 		log.Printf("error readding hddtemps: %v", err)
 	}
 	prometheus.MustRegister(hddcollector)
 
-	go collectLm()
+	lmscollector := NewLmSensorsCollector()
+	lmscollector.Init()
+	prometheus.MustRegister(lmscollector)
 
 	http.Handle(*metricsPath, prometheus.Handler())
 
@@ -91,27 +82,54 @@ func main() {
 	http.ListenAndServe(*listenAddress, nil)
 }
 
-func collectLm() {
-	gosensors.Init()
-	defer gosensors.Cleanup()
-	for {
-		for _, chip := range gosensors.GetDetectedChips() {
-			chipName := chip.String()
-			adaptorName := chip.AdapterName()
-			for _, feature := range chip.GetFeatures() {
-				if strings.HasPrefix(feature.Name, "fan") {
-					fanspeed.WithLabelValues(feature.GetLabel(), chipName, adaptorName).Set(feature.GetValue())
-				} else if strings.HasPrefix(feature.Name, "temp") {
-					temperature.WithLabelValues(feature.GetLabel(), chipName, adaptorName).Set(feature.GetValue())
-				} else if strings.HasPrefix(feature.Name, "in") {
-					voltages.WithLabelValues(feature.GetLabel(), chipName, adaptorName).Set(feature.GetValue())
-				} else if strings.HasPrefix(feature.Name, "power") {
-					powers.WithLabelValues(feature.GetLabel(), chipName, adaptorName).Set(feature.GetValue())
-				}
-			}
+type (
+	LmSensorsCollector struct{}
+)
 
+func NewLmSensorsCollector() *LmSensorsCollector {
+	return &LmSensorsCollector{}
+}
+
+func (l *LmSensorsCollector) Init() {
+	gosensors.Init()
+}
+
+// Describe implements prometheus.Collector.
+func (l *LmSensorsCollector) Describe(ch chan<- *prometheus.Desc) {
+	ch <- fanspeedDesc
+	ch <- powerDesc
+	ch <- temperatureDesc
+	ch <- voltageDesc
+}
+
+// Collect implements prometheus.Collector.
+func (l *LmSensorsCollector) Collect(ch chan<- prometheus.Metric) {
+	for _, chip := range gosensors.GetDetectedChips() {
+		chipName := chip.String()
+		adaptorName := chip.AdapterName()
+		for _, feature := range chip.GetFeatures() {
+			if strings.HasPrefix(feature.Name, "fan") {
+				ch <- prometheus.MustNewConstMetric(fanspeedDesc,
+					prometheus.GaugeValue,
+					feature.GetValue(),
+					feature.GetLabel(), chipName, adaptorName)
+			} else if strings.HasPrefix(feature.Name, "temp") {
+				ch <- prometheus.MustNewConstMetric(temperatureDesc,
+					prometheus.GaugeValue,
+					feature.GetValue(),
+					feature.GetLabel(), chipName, adaptorName)
+			} else if strings.HasPrefix(feature.Name, "in") {
+				ch <- prometheus.MustNewConstMetric(voltageDesc,
+					prometheus.GaugeValue,
+					feature.GetValue(),
+					feature.GetLabel(), chipName, adaptorName)
+			} else if strings.HasPrefix(feature.Name, "power") {
+				ch <- prometheus.MustNewConstMetric(powerDesc,
+					prometheus.GaugeValue,
+					feature.GetValue(),
+					feature.GetLabel(), chipName, adaptorName)
+			}
 		}
-		time.Sleep(1 * time.Second)
 	}
 }
 
