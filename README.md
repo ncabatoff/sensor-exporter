@@ -12,3 +12,9 @@ hddtemp (http://www.guzu.net/linux/hddtemp.php) to get HDD temperature from
 SMART data.  Since hddtemp must run as root to collect this data, rather than
 call it directly we expect the user to run it in daemon mode with its -d flag.
 Then we connect to a port it listens on to fetch the data.
+
+## Dashboard
+
+See https://grafana.net/dashboards/237 for an example dashboard.  This is probably
+way more than what you want, just mine the bits that are of interest and incorporate
+them into your general system health dashboard.
