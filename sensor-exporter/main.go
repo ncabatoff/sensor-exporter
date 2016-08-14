@@ -163,6 +163,12 @@ func (h *HddCollector) Init() error {
 }
 
 func (h *HddCollector) readTempsFromConn() (string, error) {
+	if h.conn == nil {
+		if err := h.Init(); err != nil {
+			return "", err
+		}
+	}
+
 	_, err := io.Copy(&h.buf, h.conn)
 	if err != nil {
 		return "", fmt.Errorf("Error reading from hddtemp socket: %v", err)
@@ -198,11 +204,16 @@ func parseHddTemp(s string) (HddTemperature, error) {
 	if len(pieces) != 4 {
 		return HddTemperature{}, fmt.Errorf("error parsing item from hddtemp, expected 4 tokens: %s", s)
 	}
-	if pieces[3] != "C" {
+	dev, id, temp, unit := pieces[0], pieces[1], pieces[2], pieces[3]
+
+	if unit == "*" {
+		return HddTemperature{Device: dev, Id: id, TemperatureCelsius: -1}, nil
+	}
+
+	if unit != "C" {
 		return HddTemperature{}, fmt.Errorf("error parsing item from hddtemp, I only speak Celsius", s)
 	}
 
-	dev, id, temp := pieces[0], pieces[1], pieces[2]
 	ftemp, err := strconv.ParseFloat(temp, 64)
 	if err != nil {
 		return HddTemperature{}, fmt.Errorf("Error parsing temperature as float: %s", temp)
