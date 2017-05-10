@@ -56,8 +56,6 @@ func main() {
 	)
 	flag.Parse()
 
-	prometheus.EnableCollectChecks(true)
-
 	hddcollector := NewHddCollector(*hddtempAddress)
 	if err := hddcollector.Init(); err != nil {
 		log.Printf("error readding hddtemps: %v", err)
